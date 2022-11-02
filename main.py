@@ -1,26 +1,30 @@
 # Import Statements
-from builtins import print
-
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import random
 import airsim
 import pickle
-import random
+import sys
 from random import choice
 from copy import deepcopy
+from builtins import print
+from threading import Timer
 
 # connect to the AirSim simulator
 client = airsim.MultirotorClient()
 client.confirmConnection()
 
 # Q-learning
-
 gridsize = 150
-height = -3
+height = -2
 # Initialize Q-table
 Q = {i:[0 for i in range(4)] for i in range(gridsize**2)}
+Trajectories = []  # list of trajectories collected for each individual epoch
+success = []
 
 # create functions
-
 # Get successive states
 def get_next_states(x, y, gridsize):
     # (x, y) - current state
@@ -80,26 +84,30 @@ def e_greedy (alpha, x, y, max_action, next_actions):
       action = choice(next_actions)
     return action  # action after e-greedy method
 
-def QLearning(Q, gridsize=150, alpha=0.02, discount=0.8, learning_rate=0.5, epochs=10000):
+def QLearning(Q, gridsize=150, alpha=0.15, discount=0.8, learning_rate=0.5, epochs=1000):
     # (x, y) - initial state for the agent
     # alpha - exploration probability during action selection
     # Q - q-table
     sumQ = []  # list of the sums of q-values for each epoch
-    Trajectories = []  # list of trajectories collected for each individual epoch
+    Trajectory = [];
     for epoch in range(epochs):
         client.reset()
         rewards = 0
-        collide = False
         x, y = 0, 0  # start from initial state
         new_trajs = [(x, y)]  # store trajectory (paths) sequences
+        new_success = [(x, y)]
         # get control
         client.enableApiControl(True)
         # unlock
         client.armDisarm(True)
         # take off
         client.moveToZAsync(height, 1).join()
+        is_end = 0
         step_count = 0
         while (True):  # run until we reach a terminal state
+            tnt = Timer(6.0, sys.exit)
+            tnt.start()
+
             # get the potential successive states and actions here
             next_states, next_actions = get_next_states(x, y, gridsize)
             # compute maxQ
@@ -110,48 +118,66 @@ def QLearning(Q, gridsize=150, alpha=0.02, discount=0.8, learning_rate=0.5, epoc
             index = next_actions.index(action)
             x_next, y_next = next_states[index]
 
-            print("Epochs:", epoch, " --> Training Step: ", step_count)
-            client.moveToPositionAsync(x, y, height, 1).join()
-            collide = client.simGetCollisionInfo().has_collided
+            if (client.simGetCollisionInfo().time_stamp != 0):
+                is_end = 1
             if (x == gridsize and y == gridsize):
-                rewards = 500
-                client.reset()
+                rewards = 50000
                 #  UPDATE Q-VALUES:
-                Q[y * (gridsize - 1) + x][index] = Q[y * (gridsize - 1) + x][index] + learning_rate * (
-                        rewards + discount * maxQ - Q[y * (gridsize - 1) + x][index])
+                Q[y * (gridsize) + x][index] = Q[y * (gridsize) + x][index] + learning_rate * (
+                        rewards + discount * maxQ - Q[y * (gridsize) + x][index])
                 # add new state to trajectories
                 x, y = x_next, y_next
                 new_trajs.append((x, y))
+                Trajectory.append(new_trajs)
+                new_success.append((x, y))
+                success.append(new_success)
                 print("AI Agent Has Arrived the Destination!")
                 break
-            elif (collide == True):
-                rewards = -100
-                client.reset()
+            if (is_end == 1):
+                rewards = -1000
                 #  UPDATE Q-VALUES:
-                Q[y * (gridsize - 1) + x][index] = Q[y * (gridsize - 1) + x][index] + learning_rate * (
-                        rewards + discount * maxQ - Q[y * (gridsize - 1) + x][index])
+                Q[y * (gridsize) + x][index] = Q[y * (gridsize) + x][index] + learning_rate * (
+                        rewards + discount * maxQ - Q[y * (gridsize) + x][index])
+                Q[(y + 1) * (gridsize) + x][index] = Q[y * (gridsize) + x][index] + learning_rate * (
+                        rewards + discount * maxQ - Q[y * (gridsize) + x][index])
+                if (y != 0):
+                    Q[(y - 1) * (gridsize) + x][index] = Q[y * (gridsize) + x][index] + learning_rate * (
+                            rewards + discount * maxQ - Q[y * (gridsize) + x][index])
+                Q[y * (gridsize) + x + 1][index] = Q[y * (gridsize) + x][index] + learning_rate * (
+                        rewards + discount * maxQ - Q[y * (gridsize) + x][index])
+                if (x != 0):
+                    Q[y * (gridsize) + x - 1][index] = Q[y * (gridsize) + x][index] + learning_rate * (
+                            rewards + discount * maxQ - Q[y * (gridsize) + x][index])
                 # add new state to trajectories
                 x, y = x_next, y_next
                 new_trajs.append((x, y))
+                Trajectory.append(new_trajs)
                 break
+            print("Epochs:", epoch, " --> Training Step: ", step_count)
+            print("x = ",x,"  y = ",y," maxQ = ",maxQ)
+            rewards += 1
+            # synchronized movement
+            client.moveToPositionAsync(x, y, height, 1).join()
+
+            tnt.cancel()
+
             #  UPDATE Q-VALUES:
-            Q[y * (gridsize - 1) + x][index] = Q[y * (gridsize - 1) + x][index] + learning_rate * (
-                    rewards + discount * maxQ - Q[y * (gridsize - 1) + x][index])
+            Q[y * (gridsize) + x][index] = Q[y * (gridsize) + x][index] + learning_rate * (
+                    rewards + discount * maxQ - Q[y * (gridsize ) + x][index])
             # update states
             x, y = x_next, y_next
             step_count +=1
             # add new state to trajectories
             new_trajs.append((x, y))
-
+            new_success.append((x, y))
         sumQ.append(sum([sum(Q[k]) for k in Q]))
-        Trajectories.append(new_trajs)
-    return sumQ, Trajectories
+    return sumQ, Trajectory
 
-
+# training
 Qvals = deepcopy(Q)
 sumQ, Trajectories = QLearning(Qvals)
 
-# #lock
+# lock
 client.armDisarm(False)
 # release control
 client.enableApiControl(False)
@@ -188,7 +214,6 @@ for Traj in Trajectories[len(Trajectories) - 5:]:
         visitations[x, y] = 1
 print(visitations)
 
-
 # plot for the last 5 trajectories
 fig, axes = plt.subplots (1, 2, figsize = (20, 8))
 df = pd.DataFrame(visitations)
@@ -196,9 +221,15 @@ sns.heatmap(df, cmap='YlOrRd', linewidths=1, linecolor='grey', ax = axes[0])
 axes[0].xaxis.set_ticks_position("top")
 axes[0].set_title('visitation map')
 
-'''
+# save the result
 f_save = open('dict_file.pkl', 'wb')
 pickle.dump(Q, f_save)
 f_save.close()
 
-'''
+f_save = open('traj_file.pkl', 'wb')
+pickle.dump(Trajectories, f_save)
+f_save.close()
+
+f_save = open('success_file.pkl', 'wb')
+pickle.dump(success, f_save)
+f_save.close()
